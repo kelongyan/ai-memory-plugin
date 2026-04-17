@@ -2,21 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
-This project follows a pragmatic changelog style inspired by [Keep a Changelog](https://keepachangelog.com/) and uses semantic versioning where practical.
+The project uses semantic versioning where practical.
 
 ## [0.1.0] - 2026-04-17
 
 ### Added
 
 - Initial Claude Code plugin metadata and hook configuration.
-- `SessionStart`, `PreToolUse`, and `PostToolUse` hook scripts.
+- Hook entrypoints for `SessionStart`, `PreToolUse`, and `PostToolUse`.
 - Local memory store under `~/.ai-memory` with:
   - `events.jsonl`
   - `lessons.json`
   - `preferences.json`
   - `stats.json`
 - Bash command result recording and command statistics.
-- Error signature normalization for repeated failures such as:
+- Error signature normalization for repeated failures, including:
   - `command not found`
   - `ModuleNotFoundError`
   - `permission denied`
@@ -26,7 +26,7 @@ This project follows a pragmatic changelog style inspired by [Keep a Changelog](
 - Safe fail-open behavior for hook exceptions and malformed JSON payloads.
 - Local memory summary CLI with JSON and pretty output modes.
 - Memory migration CLI with dry-run and backup support.
-- Chinese GitHub-ready README with examples, troubleshooting, and usage guidance.
+- Chinese README with installation, usage, troubleshooting, and privacy notes.
 - MIT license.
 
 ### Changed
@@ -38,9 +38,9 @@ This project follows a pragmatic changelog style inspired by [Keep a Changelog](
 
 ### Security
 
-- Added secret redaction for common token/password/API key patterns.
+- Added secret redaction for common token, password, API key, and bearer-token patterns.
 - Added path sanitization for command output and stored events.
-- Added `.gitignore` rules to avoid committing local memory files, logs, virtual environments, and secrets.
+- Added `.gitignore` rules for local memory files, logs, virtual environments, build outputs, and secret-bearing files.
 
 ### Tested
 
