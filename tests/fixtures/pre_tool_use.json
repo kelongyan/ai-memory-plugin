@@ -1,0 +1,9 @@
+{
+  "session_id": "session-123",
+  "hook_event_name": "PreToolUse",
+  "cwd": "C:/work/demo",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "npm test"
+  }
+}

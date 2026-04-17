@@ -1,0 +1,14 @@
+{
+  "session_id": "session-123",
+  "hook_event_name": "PostToolUse",
+  "cwd": "C:/work/demo",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git status"
+  },
+  "tool_result": {
+    "return_code": 0,
+    "stdout": "On branch main",
+    "stderr": ""
+  }
+}

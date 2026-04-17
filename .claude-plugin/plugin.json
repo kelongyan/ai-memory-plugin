@@ -1,0 +1,6 @@
+{
+  "name": "ai-memory-plugin",
+  "version": "0.1.0",
+  "description": "Claude Code plugin that records command outcomes into ~/.ai-memory and surfaces reusable lessons before repeated mistakes.",
+  "hooks": "./hooks/hooks.json"
+}
