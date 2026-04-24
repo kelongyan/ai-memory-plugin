@@ -44,3 +44,6 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+# Local Claude Code settings (for development)
+.claude/

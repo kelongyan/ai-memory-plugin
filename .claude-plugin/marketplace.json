@@ -1,0 +1,14 @@
+{
+  "name": "ai-memory-marketplace",
+  "owner": {
+    "name": "KeLong Yan"
+  },
+  "plugins": [
+    {
+      "name": "ai-memory-plugin",
+      "source": "./",
+      "description": "Claude Code plugin that records command outcomes into ~/.ai-memory and surfaces reusable lessons before repeated mistakes.",
+      "version": "0.1.0"
+    }
+  ]
+}
