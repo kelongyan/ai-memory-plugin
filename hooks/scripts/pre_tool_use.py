@@ -13,7 +13,7 @@ if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
 from scripts.lesson_engine import find_relevant_lessons
-from scripts.memory_store import ensure_memory_home, find_allow_candidates
+from scripts.memory_store import ensure_memory_home, find_allow_candidates, find_auto_allow_match
 from scripts.sanitize import normalize_command
 
 HIGH_VALUE_FAILURE_COUNT = 3
@@ -81,7 +81,7 @@ def build_habit_message(command: str, candidates: list[dict]) -> str:
     ]
     if scope == "project":
         lines.append(f"- cwd: {cwd}")
-    lines.append("- note: 仅供参考，不会自动修改权限设置。")
+    lines.append("- note: 该命令已接近或达到自动放行阈值时，会同步到项目 settings。")
     return "\n".join(lines)
 
 
@@ -98,6 +98,10 @@ def main() -> int:
     cwd = payload.get("cwd") or ""
 
     if not command:
+        emit_silent_response()
+        return 0
+
+    if find_auto_allow_match(command=command, cwd=cwd):
         emit_silent_response()
         return 0
 

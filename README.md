@@ -103,7 +103,7 @@
 
 - 默认静默
 - 仅在强信号出现时提示
-- 不自动修改权限
+- 低风险命令在累计允许超过 5 次后可自动晋升为项目级 auto-allow
 - 不频繁向 Claude 对话流插入消息
 
 这样既保留了记忆价值，也尽量避免影响 Claude Code 的正常交互。
@@ -119,9 +119,12 @@
 - 识别重复失败的错误签名
 - 自动归纳 lessons（经验教训）
 - 识别低风险高频成功命令，生成 habits / allow candidates
+- 对累计允许超过 5 次的低风险命令自动晋升为项目级 auto-allow 规则
+- 将晋升后的 auto-allow 规则同步写入项目 `.claude/settings.json`
 - 在 `PreToolUse` 阶段为高价值风险或高价值习惯提供提醒
 - 提供内存数据迁移脚本
 - 提供本地 memory summary 汇总脚本
+- 提供撤销 auto-allow 规则的管理脚本
 
 ### 当前提醒策略
 
@@ -138,6 +141,16 @@
 满足：
 
 - `success_count >= 5`
+- 且该命令尚未命中已生效的 auto-allow 规则
+
+#### auto-allow 晋升条件
+满足以下条件时，插件会把命令写入项目 `.claude/settings.json`：
+
+- 属于低风险命令
+- 作用域为 `project`
+- `approved_count >= 6`
+
+命中已生效的 auto-allow 后，`PreToolUse` 会保持静默，不再重复输出习惯提醒。
 
 除上述情况外，插件保持静默。
 
@@ -157,9 +170,9 @@ ai-memory 提醒：该命令与历史失败模式相似。
 - advice: `npm test` 之前多次因命令不可用失败。先检查工具是否已安装，或当前 shell/PATH 是否正确。
 ```
 
-### 场景 B：稳定习惯被识别
+### 场景 B：稳定习惯被识别但尚未自动放行
 
-当某个低风险命令在项目中稳定成功多次后：
+当某个低风险命令在项目中稳定出现、接近自动放行阈值时：
 
 ```text
 ai-memory 提醒：该命令命中历史成功习惯。
@@ -168,10 +181,51 @@ ai-memory 提醒：该命令命中历史成功习惯。
 - success_count: 5
 - suggested_permission: allow
 - cwd: c:/work/demo
-- note: 仅供参考，不会自动修改权限设置。
+- note: 达到自动放行阈值后，会同步到项目 settings。
 ```
 
-### 场景 C：默认保持静默
+### 场景 C：达到 6 次后自动写入项目 settings
+
+当同一低风险命令在同一项目中累计允许达到 6 次后，插件会自动落地到项目 `.claude/settings.json`：
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status *)"
+    ]
+  },
+  "aiMemoryPlugin": {
+    "managedAutoAllowRules": [
+      {
+        "command": "git status",
+        "scope": "project",
+        "cwd": "c:/work/demo",
+        "approved_count": 6,
+        "source": "ai-memory-plugin"
+      }
+    ]
+  }
+}
+```
+
+此后同命令再次命中该项目时，`PreToolUse` 会静默放行，不再重复提醒。
+
+### 场景 D：撤销一条自动放行规则
+
+如果你不想继续保留某条 auto-allow，可以执行：
+
+```bash
+python scripts/revoke_auto_allow.py --command "git status" --cwd "c:/work/demo"
+```
+
+撤销后会同时：
+
+- 从 `preferences.json` 删除对应 `auto_allow_rules`
+- 写入 `never_allow`，避免历史事件立即重新晋升
+- 从项目 `.claude/settings.json` 删除对应 `Bash(git status *)`
+
+### 场景 E：默认保持静默
 
 在大多数情况下，插件不会主动输出内容：
 
@@ -196,13 +250,15 @@ ai-memory-plugin/
 │  └─ scripts/
 │     ├─ session_start.py      # 会话开始时初始化（当前默认静默）
 │     ├─ pre_tool_use.py       # 执行前提醒高价值风险/习惯
-│     └─ post_tool_use.py      # 执行后记录结果并更新记忆
+│     └─ post_tool_use.py      # 执行后记录结果、晋升 auto-allow 并同步 settings
 ├─ scripts/
 │  ├─ sanitize.py              # 脱敏、路径规整、错误签名归一化
-│  ├─ memory_store.py          # 数据读写、统计、候选习惯生成
+│  ├─ memory_store.py          # 数据读写、统计、候选习惯与 auto-allow 管理
 │  ├─ lesson_engine.py         # lessons 重建与匹配逻辑
 │  ├─ memory_summary.py        # 查看 memory 摘要
-│  └─ migrate_memory.py        # 迁移旧数据
+│  ├─ migrate_memory.py        # 迁移旧数据
+│  ├─ settings_sync.py         # 同步/撤销项目 settings 中的 auto-allow
+│  └─ revoke_auto_allow.py     # 撤销 auto-allow 规则
 ├─ skills/
 │  └─ ai-memory-assistant/
 │     └─ SKILL.md              # 面向记忆分析的技能说明
@@ -240,11 +296,13 @@ ai-memory-plugin/
 - 更新命令统计和错误签名统计
 - 对低风险高频成功命令生成候选习惯
 - 对重复失败模式重建 lessons
+- 在满足阈值时把 project 级低风险命令晋升为 auto-allow 规则
+- 在规则晋升后同步写入项目 `.claude/settings.json`
 
 当前策略：
 
-- 只负责记忆，不主动插入对话
 - 默认静默输出
+- 异常 fail-open，不阻断命令执行
 - 为稳定性考虑，仅基于最近 `1000` 条事件重建 lessons
 
 ### 3. `PreToolUse`
@@ -253,11 +311,12 @@ ai-memory-plugin/
 
 - 检查该命令是否命中高价值失败 lesson
 - 检查是否命中高价值使用习惯
+- 检查是否已命中生效中的 auto-allow 规则
 - 仅在高价值场景下输出提醒
 
 当前策略：
 
-- 不自动放权
+- 已命中 auto-allow 时保持静默
 - 不默认打断
 - 只在值得提示时输出信息
 
@@ -289,10 +348,25 @@ ai-memory-plugin/
 从重复失败中提炼出的经验集合。
 
 ### `preferences.json`
-保存习惯候选、工具偏好、阈值等配置。
+保存习惯候选、阈值、auto-allow 规则与手动撤销记录。
+
+其中当前会包含：
+
+- `always_allow_candidates`
+- `auto_allow_rules`
+- `never_allow`
+- `candidate_thresholds`
 
 ### `stats.json`
 汇总命令统计和错误签名统计。
+
+### 项目 `.claude/settings.json`
+当某条 project 级低风险命令累计允许达到阈值后，插件会把对应规则写入项目设置：
+
+- `permissions.allow`
+- `aiMemoryPlugin.managedAutoAllowRules`
+
+这样后续同命令可直接命中项目级 allowlist，而不是每次只停留在提醒层。
 
 ---
 
@@ -309,7 +383,8 @@ ai-memory-plugin/
 - 对路径做规整与裁剪
 - 对错误信息做签名归一化，减少噪音
 - 不会自动上传 `~/.ai-memory` 内容
-- 不会自动修改 Claude Code 权限策略
+- 只会对重复出现、低风险、project 级的命令自动落地权限
+- 支持通过撤销脚本移除已落地的 auto-allow 规则
 
 ### 你仍然应该注意
 
@@ -383,20 +458,47 @@ npm test
 
 ### 场景二：你有稳定的命令习惯
 
-例如你在某个项目中频繁且成功地执行：
+例如你在某个项目中频繁执行：
 
 ```bash
 git status
 ```
 
-插件会将其视为低风险高频成功命令，并在达到高价值阈值后识别为“稳定习惯候选”。
+插件会将其视为低风险高频命令，并随着允许次数增长逐步演化：
 
-注意：
+- 第 3 次成功后，会进入 `always_allow_candidates`
+- 第 5 次命中时，`PreToolUse` 可能给出高价值习惯提醒
+- 第 6 次累计允许后，会晋升为项目级 auto-allow 并同步到 `.claude/settings.json`
 
-- 这只是提醒，不是自动授权
-- 这只是记忆，不是替你做决定
+### 场景三：命令达到自动放行阈值
 
-### 场景三：查看本地记忆摘要
+当某条 project 级低风险命令累计允许达到 6 次后：
+
+- `preferences.json` 会新增对应 `auto_allow_rules`
+- 项目 `.claude/settings.json` 会新增 `Bash(<command> *)`
+- 后续同项目再次执行时，`PreToolUse` 将保持静默
+
+### 场景四：撤销 auto-allow 规则
+
+如果你希望撤销某条已经生效的自动放行规则：
+
+```bash
+python scripts/revoke_auto_allow.py --command "git status" --cwd "c:/work/demo"
+```
+
+如果要删除同一命令的全部 project 级匹配规则：
+
+```bash
+python scripts/revoke_auto_allow.py --command "git status" --all-matching
+```
+
+撤销后插件会：
+
+- 从 `auto_allow_rules` 中删除该规则
+- 将该规则写入 `never_allow`
+- 从项目 `.claude/settings.json` 移除对应 allow 条目
+
+### 场景五：查看本地记忆摘要
 
 ```bash
 python scripts/memory_summary.py --pretty
@@ -412,7 +514,7 @@ python scripts/memory_summary.py --pretty
 
 如果看到这些内容，说明插件已经开始积累有效记忆数据。
 
-### 场景四：迁移旧数据
+### 场景六：迁移旧数据
 
 ```bash
 python scripts/migrate_memory.py --backup
@@ -456,6 +558,16 @@ python scripts/memory_summary.py --json
 python scripts/memory_summary.py --pretty
 ```
 
+你会看到：
+
+- Top commands
+- Top error signatures
+- Lessons
+- Project habits
+- Global habits
+- Auto allow project rules
+- Never allow rules
+
 只看某些部分：
 
 ```bash
@@ -467,6 +579,22 @@ python scripts/memory_summary.py --pretty --only overview,lessons
 ```bash
 python scripts/memory_summary.py --json --limit 5
 ```
+
+### 管理 auto-allow 规则
+
+撤销单条 project 级规则：
+
+```bash
+python scripts/revoke_auto_allow.py --command "git status" --cwd "c:/work/demo"
+```
+
+撤销同一命令的全部 project 级匹配规则：
+
+```bash
+python scripts/revoke_auto_allow.py --command "git status" --all-matching
+```
+
+脚本会输出 JSON summary，便于确认 memory 与项目 settings 是否都已同步移除。
 
 ### 迁移旧 memory 数据
 
@@ -493,8 +621,8 @@ python scripts/migrate_memory.py --backup
 ### 默认行为
 
 - `SessionStart`：静默
-- `PostToolUse`：静默
-- `PreToolUse`：只在高价值命中时提醒
+- `PostToolUse`：静默记录；命令晋升为 auto-allow 时同步更新项目 settings
+- `PreToolUse`：只在高价值命中时提醒；命中已生效 auto-allow 时保持静默
 
 ### 为什么这样设计？
 
@@ -514,6 +642,7 @@ python scripts/migrate_memory.py --backup
 - 命中了，但强度不足，未达到高价值阈值
 - 该命令不属于支持分析的低风险习惯类命令
 - `~/.ai-memory` 里尚未积累足够数据
+- 该命令已经进入 project 级 auto-allow，因此 `PreToolUse` 会故意静默
 
 ### 2. 为什么我以前会遇到 Claude 对话被截断？
 
@@ -529,6 +658,7 @@ python scripts/migrate_memory.py --backup
 - hooks 异常 fail-open
 - lessons 重建只处理最近 1000 条事件
 - 不再自动注入 `permissionDecision: allow`
+- 改为通过项目 `.claude/settings.json` 持久化 project 级 auto-allow
 
 ### 3. 如何确认插件在工作？
 
@@ -538,7 +668,13 @@ python scripts/migrate_memory.py --backup
 python scripts/memory_summary.py --pretty
 ```
 
-如果你看到命令统计、错误签名、lessons 或 habits，说明插件已经正常积累记忆。
+以及检查项目级设置文件：
+
+```text
+.claude/settings.json
+```
+
+如果你看到命令统计、错误签名、lessons、habits、auto-allow rules 或 never-allow rules，说明插件已经正常积累记忆；如果 `.claude/settings.json` 中出现 `Bash(...)` allow 项，说明 project 级自动放行已生效。
 
 ---
 
@@ -550,10 +686,12 @@ python scripts/memory_summary.py --pretty
 - 错误签名归一化
 - lessons 生成与匹配
 - habits 候选生成
+- auto-allow 晋升与 project settings 同步
+- auto-allow 撤销与 never-allow 防重建
 - hook 静默策略
 - hook 异常 fail-open
 - 高价值提醒模式
-- memory summary / migrate 脚本
+- memory summary / migrate / revoke 脚本
 
 运行命令：
 
@@ -563,9 +701,10 @@ python -m unittest discover -s tests -v
 
 当前状态：
 
-- `29` 个测试通过
+- `40` 个测试通过
 - 核心 hook 行为已验证
-- 文档更新后验证通过
+- auto-allow 晋升与撤销流程已验证
+- 文档与当前实现已对齐
 
 ---
 

@@ -65,6 +65,8 @@ def apply_limit(summary: dict, limit: int | None) -> dict:
     limited["habits"] = {
         "project_candidates": habits.get("project_candidates", [])[:limit],
         "global_candidates": habits.get("global_candidates", [])[:limit],
+        "auto_allow_project_rules": habits.get("auto_allow_project_rules", [])[:limit],
+        "never_allow_rules": habits.get("never_allow_rules", [])[:limit],
     }
     return limited
 
@@ -98,6 +100,8 @@ def render_pretty(summary: dict) -> str:
             f"- events: {overview.get('events', 0)}",
             f"- lessons: {overview.get('lessons', 0)}",
             f"- allow_candidates: {overview.get('allow_candidates', 0)}",
+            f"- auto_allow_rules: {overview.get('auto_allow_rules', 0)}",
+            f"- never_allow_rules: {overview.get('never_allow_rules', 0)}",
             f"- commands_tracked: {overview.get('commands_tracked', 0)}",
             f"- error_signatures_tracked: {overview.get('error_signatures_tracked', 0)}",
         ])
@@ -149,7 +153,7 @@ def render_pretty(summary: dict) -> str:
         if project_candidates:
             for item in project_candidates:
                 lines.append(
-                    f"- {item.get('command', '')} @ {item.get('cwd', '-')}: success_count={item.get('success_count', 0)}, suggested_permission={item.get('suggested_permission', '-')}"
+                    f"- {item.get('command', '')} @ {item.get('cwd', '-')}: success_count={item.get('success_count', 0)}, approved_count={item.get('approved_count', 0)}, suggested_permission={item.get('suggested_permission', '-')}"
                 )
         else:
             lines.append("- none")
@@ -160,7 +164,29 @@ def render_pretty(summary: dict) -> str:
         if global_candidates:
             for item in global_candidates:
                 lines.append(
-                    f"- {item.get('command', '')}: success_count={item.get('success_count', 0)}, suggested_permission={item.get('suggested_permission', '-')}"
+                    f"- {item.get('command', '')}: success_count={item.get('success_count', 0)}, approved_count={item.get('approved_count', 0)}, suggested_permission={item.get('suggested_permission', '-')}"
+                )
+        else:
+            lines.append("- none")
+
+        lines.append("")
+        lines.append("Auto allow project rules")
+        auto_allow_rules = habits.get("auto_allow_project_rules", [])
+        if auto_allow_rules:
+            for item in auto_allow_rules:
+                lines.append(
+                    f"- {item.get('command', '')} @ {item.get('cwd', '-')}: approved_count={item.get('approved_count', 0)}, enabled={item.get('enabled', True)}"
+                )
+        else:
+            lines.append("- none")
+
+        lines.append("")
+        lines.append("Never allow rules")
+        never_allow_rules = habits.get("never_allow_rules", [])
+        if never_allow_rules:
+            for item in never_allow_rules:
+                lines.append(
+                    f"- {item.get('command', '')} @ {item.get('cwd', '-')}: reason={item.get('reason', '-')}, created_at={item.get('created_at', '-')}"
                 )
         else:
             lines.append("- none")

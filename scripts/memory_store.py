@@ -24,9 +24,9 @@ LESSONS_FILE = MEMORY_HOME / "lessons.json"
 PREFERENCES_FILE = MEMORY_HOME / "preferences.json"
 STATS_FILE = MEMORY_HOME / "stats.json"
 
-
 DEFAULT_CANDIDATE_THRESHOLDS = {
     "success_threshold_for_candidate": 3,
+    "approval_threshold_for_auto_allow": 6,
     "minimum_risk_level": "low",
 }
 
@@ -37,9 +37,10 @@ def utc_now_iso() -> str:
 
 def default_preferences() -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "created_at": utc_now_iso(),
         "always_allow_candidates": [],
+        "auto_allow_rules": [],
         "never_allow": [],
         "tool_preferences": {
             "claude-code": {
@@ -70,11 +71,72 @@ def normalize_candidate(candidate: Any) -> dict[str, Any] | None:
         "scope": scope,
         "cwd": cwd,
         "success_count": max(int(candidate.get("success_count", 0) or 0), 0),
+        "approved_count": max(int(candidate.get("approved_count", 0) or 0), 0),
         "last_seen_at": candidate.get("last_seen_at"),
         "reason": candidate.get("reason") or "repeated low-risk successful command",
         "risk_level": candidate.get("risk_level") or "low",
         "suggested_permission": candidate.get("suggested_permission") or "allow",
+        "source": candidate.get("source") or "derived_from_events",
+        "enabled": bool(candidate.get("enabled", True)),
     }
+
+
+def normalize_auto_allow_rule(rule: Any) -> dict[str, Any] | None:
+    candidate = normalize_candidate(rule)
+    if not candidate:
+        return None
+    candidate["success_count"] = max(int(rule.get("success_count", candidate.get("success_count", 0)) or 0), 0)
+    candidate["approved_count"] = max(int(rule.get("approved_count", candidate.get("approved_count", 0)) or 0), 0)
+    candidate["reason"] = rule.get("reason") or "repeated allowed low-risk command"
+    candidate["source"] = rule.get("source") or "promoted_from_history"
+    candidate["enabled"] = bool(rule.get("enabled", True))
+    return candidate
+
+
+def normalize_never_allow_rule(rule: Any) -> dict[str, Any] | None:
+    candidate = normalize_candidate(rule)
+    if not candidate:
+        return None
+    candidate["reason"] = rule.get("reason") or "manually revoked auto allow rule"
+    candidate["created_at"] = rule.get("created_at") or utc_now_iso()
+    candidate["enabled"] = True
+    return candidate
+
+
+def _candidate_key(item: dict[str, Any]) -> tuple[str, str, str]:
+    return (item.get("command", ""), item.get("scope", "global"), item.get("cwd", ""))
+
+
+def _normalize_command_scope(command: str, cwd: str | None = None) -> tuple[str, str, str]:
+    command_key = command_prefix(command) or normalize_command(command)
+    normalized_cwd = normalize_scope_path(cwd)
+    scope = "project" if normalized_cwd else "global"
+    return (command_key, scope, normalized_cwd if scope == "project" else "")
+
+
+def _rule_matches(command: str, cwd: str | None, item: dict[str, Any], all_matching: bool = False) -> bool:
+    command_key, scope, normalized_cwd = _normalize_command_scope(command, cwd)
+    if item.get("command") != command_key:
+        return False
+    if all_matching:
+        return item.get("scope") == "project"
+    if item.get("scope") != scope:
+        return False
+    if scope == "project":
+        return item.get("cwd") == normalized_cwd
+    return True
+
+
+def _is_never_allowed(command_key: str, scope: str, cwd: str, rules: list[dict[str, Any]]) -> bool:
+    for rule in rules:
+        if rule.get("command") != command_key:
+            continue
+        if rule.get("scope") != scope:
+            continue
+        if scope == "project" and rule.get("cwd") != cwd:
+            continue
+        return True
+    return False
 
 
 def normalize_preferences(data: Any) -> dict[str, Any]:
@@ -83,24 +145,51 @@ def normalize_preferences(data: Any) -> dict[str, Any]:
         return defaults
 
     candidates: list[dict[str, Any]] = []
-    seen_keys: set[tuple[str, str, str]] = set()
+    seen_candidate_keys: set[tuple[str, str, str]] = set()
     for raw_candidate in data.get("always_allow_candidates", []):
         candidate = normalize_candidate(raw_candidate)
         if not candidate:
             continue
-        key = (candidate["command"], candidate["scope"], candidate["cwd"])
-        if key in seen_keys:
+        key = _candidate_key(candidate)
+        if key in seen_candidate_keys:
             continue
-        seen_keys.add(key)
+        seen_candidate_keys.add(key)
         candidates.append(candidate)
 
+    auto_allow_rules: list[dict[str, Any]] = []
+    seen_rule_keys: set[tuple[str, str, str]] = set()
+    for raw_rule in data.get("auto_allow_rules", []):
+        rule = normalize_auto_allow_rule(raw_rule)
+        if not rule:
+            continue
+        key = _candidate_key(rule)
+        if key in seen_rule_keys:
+            continue
+        seen_rule_keys.add(key)
+        auto_allow_rules.append(rule)
+
+    never_allow_rules: list[dict[str, Any]] = []
+    seen_never_allow_keys: set[tuple[str, str, str]] = set()
+    for raw_rule in data.get("never_allow", []):
+        rule = normalize_never_allow_rule(raw_rule)
+        if not rule:
+            continue
+        key = _candidate_key(rule)
+        if key in seen_never_allow_keys:
+            continue
+        seen_never_allow_keys.add(key)
+        never_allow_rules.append(rule)
+
     candidates.sort(key=lambda item: (item.get("scope") != "project", item.get("command", ""), item.get("cwd", "")))
+    auto_allow_rules.sort(key=lambda item: (item.get("scope") != "project", item.get("command", ""), item.get("cwd", "")))
+    never_allow_rules.sort(key=lambda item: (item.get("scope") != "project", item.get("command", ""), item.get("cwd", "")))
 
     normalized = {
-        "version": data.get("version", defaults["version"]),
+        "version": max(int(data.get("version", defaults["version"]) or defaults["version"]), defaults["version"]),
         "created_at": data.get("created_at") or defaults["created_at"],
         "always_allow_candidates": candidates,
-        "never_allow": data.get("never_allow") if isinstance(data.get("never_allow"), list) else [],
+        "auto_allow_rules": auto_allow_rules,
+        "never_allow": never_allow_rules,
         "tool_preferences": data.get("tool_preferences") if isinstance(data.get("tool_preferences"), dict) else defaults["tool_preferences"],
         "candidate_thresholds": defaults["candidate_thresholds"].copy(),
     }
@@ -306,85 +395,232 @@ def update_error_signature_stats(signature: str, ts: str) -> None:
     write_stats(stats)
 
 
-def _candidate_from_key(command_key: str, scope: str, cwd: str, success_count: int, last_seen_at: str | None) -> dict[str, Any]:
+def _candidate_from_key(command_key: str, scope: str, cwd: str, success_count: int, approved_count: int, last_seen_at: str | None) -> dict[str, Any]:
     return {
         "command": command_key,
         "scope": scope,
         "cwd": cwd if scope == "project" else "",
         "success_count": success_count,
+        "approved_count": approved_count,
         "last_seen_at": last_seen_at,
         "reason": "repeated low-risk successful command",
         "risk_level": "low",
         "suggested_permission": "allow",
+        "source": "derived_from_events",
+        "enabled": True,
+    }
+
+
+def _auto_allow_rule_from_key(command_key: str, cwd: str, approved_count: int, success_count: int, last_seen_at: str | None) -> dict[str, Any]:
+    return {
+        "command": command_key,
+        "scope": "project",
+        "cwd": cwd,
+        "success_count": success_count,
+        "approved_count": approved_count,
+        "last_seen_at": last_seen_at,
+        "reason": "repeated allowed low-risk command",
+        "risk_level": "low",
+        "suggested_permission": "allow",
+        "source": "promoted_from_history",
+        "enabled": True,
     }
 
 
 def collect_allow_candidates_from_events(events: list[dict[str, Any]], preferences: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     preferences = normalize_preferences(preferences or read_preferences())
     threshold = preferences["candidate_thresholds"].get("success_threshold_for_candidate", 3)
+    never_allow_rules = preferences.get("never_allow", [])
 
-    global_counts: Counter[str] = Counter()
+    global_success_counts: Counter[str] = Counter()
+    global_approval_counts: Counter[str] = Counter()
     global_last_seen: dict[str, str] = {}
-    project_counts: Counter[tuple[str, str]] = Counter()
+    project_success_counts: Counter[tuple[str, str]] = Counter()
+    project_approval_counts: Counter[tuple[str, str]] = Counter()
     project_last_seen: dict[tuple[str, str], str] = {}
 
     for raw_event in events:
         event = normalize_event_record(raw_event)
-        if not event.get("ok"):
-            continue
         command_key = event.get("command_prefix") or event.get("command")
         if not command_key or not is_low_risk_command(command_key):
             continue
 
+        if _is_never_allowed(command_key, "global", "", never_allow_rules):
+            continue
+
         ts = event.get("ts")
-        global_counts[command_key] += 1
+        global_approval_counts[command_key] += 1
+        if event.get("ok"):
+            global_success_counts[command_key] += 1
         if isinstance(ts, str):
             global_last_seen[command_key] = ts
 
         cwd = normalize_scope_path(event.get("cwd", ""))
         if cwd:
+            if _is_never_allowed(command_key, "project", cwd, never_allow_rules):
+                continue
             key = (command_key, cwd)
-            project_counts[key] += 1
+            project_approval_counts[key] += 1
+            if event.get("ok"):
+                project_success_counts[key] += 1
             if isinstance(ts, str):
                 project_last_seen[key] = ts
 
     candidates: list[dict[str, Any]] = []
-    for (command_key, cwd), success_count in project_counts.items():
+    for (command_key, cwd), success_count in project_success_counts.items():
         if success_count < threshold:
             continue
-        candidates.append(_candidate_from_key(command_key, "project", cwd, success_count, project_last_seen.get((command_key, cwd))))
+        candidates.append(_candidate_from_key(
+            command_key,
+            "project",
+            cwd,
+            success_count,
+            project_approval_counts.get((command_key, cwd), success_count),
+            project_last_seen.get((command_key, cwd)),
+        ))
 
-    for command_key, success_count in global_counts.items():
+    for command_key, success_count in global_success_counts.items():
         if success_count < threshold:
             continue
-        candidates.append(_candidate_from_key(command_key, "global", "", success_count, global_last_seen.get(command_key)))
+        candidates.append(_candidate_from_key(
+            command_key,
+            "global",
+            "",
+            success_count,
+            global_approval_counts.get(command_key, success_count),
+            global_last_seen.get(command_key),
+        ))
 
     candidates.sort(key=lambda item: (item.get("scope") != "project", item.get("command", ""), item.get("cwd", "")))
     return candidates
 
 
+def collect_auto_allow_rules_from_events(events: list[dict[str, Any]], preferences: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    preferences = normalize_preferences(preferences or read_preferences())
+    threshold = preferences["candidate_thresholds"].get("approval_threshold_for_auto_allow", 6)
+    never_allow_rules = preferences.get("never_allow", [])
+
+    project_approval_counts: Counter[tuple[str, str]] = Counter()
+    project_success_counts: Counter[tuple[str, str]] = Counter()
+    project_last_seen: dict[tuple[str, str], str] = {}
+
+    for raw_event in events:
+        event = normalize_event_record(raw_event)
+        command_key = event.get("command_prefix") or event.get("command")
+        cwd = normalize_scope_path(event.get("cwd", ""))
+        if not command_key or not cwd or not is_low_risk_command(command_key):
+            continue
+        if _is_never_allowed(command_key, "project", cwd, never_allow_rules):
+            continue
+
+        key = (command_key, cwd)
+        project_approval_counts[key] += 1
+        if event.get("ok"):
+            project_success_counts[key] += 1
+        ts = event.get("ts")
+        if isinstance(ts, str):
+            project_last_seen[key] = ts
+
+    rules: list[dict[str, Any]] = []
+    for (command_key, cwd), approved_count in project_approval_counts.items():
+        if approved_count < threshold:
+            continue
+        rules.append(_auto_allow_rule_from_key(
+            command_key,
+            cwd,
+            approved_count,
+            project_success_counts.get((command_key, cwd), 0),
+            project_last_seen.get((command_key, cwd)),
+        ))
+
+    rules.sort(key=lambda item: (item.get("command", ""), item.get("cwd", "")))
+    return rules
+
+
 def rebuild_preferences_from_events(events: list[dict[str, Any]], base_preferences: dict[str, Any] | None = None) -> dict[str, Any]:
     preferences = normalize_preferences(base_preferences or read_preferences())
     preferences["always_allow_candidates"] = collect_allow_candidates_from_events(events, preferences)
+    preferences["auto_allow_rules"] = collect_auto_allow_rules_from_events(events, preferences)
     return preferences
 
 
-def update_allow_candidate(command_key: str, cwd: str, ts: str) -> list[dict[str, Any]]:
-    if not is_low_risk_command(command_key):
-        return []
-
-    preferences = rebuild_preferences_from_events(read_events(), read_preferences())
-    write_preferences(preferences)
-    candidates = []
-    normalized_cwd = normalize_scope_path(cwd)
-    for candidate in preferences.get("always_allow_candidates", []):
-        if candidate.get("command") != command_key:
+def _matching_candidates(items: list[dict[str, Any]], command_key: str, normalized_cwd: str) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for item in items:
+        if item.get("command") != command_key:
             continue
-        if candidate.get("scope") == "project" and candidate.get("cwd") == normalized_cwd:
-            candidates.append(candidate)
-        elif candidate.get("scope") == "global":
-            candidates.append(candidate)
-    return candidates
+        if item.get("scope") == "project" and item.get("cwd") == normalized_cwd:
+            matches.append(item)
+        elif item.get("scope") == "global":
+            matches.append(item)
+    return matches
+
+
+def update_allow_candidates_and_auto_rules(command_key: str, cwd: str, ts: str) -> dict[str, Any]:
+    if not is_low_risk_command(command_key):
+        return {
+            "candidates": [],
+            "auto_allow_rules": [],
+            "promoted_rules": [],
+            "preferences": read_preferences(),
+            "last_seen_at": ts,
+        }
+
+    previous_preferences = read_preferences()
+    previous_rules = _matching_candidates(previous_preferences.get("auto_allow_rules", []), command_key, normalize_scope_path(cwd))
+    previous_rule_keys = {_candidate_key(item) for item in previous_rules}
+
+    preferences = rebuild_preferences_from_events(read_events(), previous_preferences)
+    write_preferences(preferences)
+
+    normalized_cwd = normalize_scope_path(cwd)
+    candidates = _matching_candidates(preferences.get("always_allow_candidates", []), command_key, normalized_cwd)
+    auto_allow_rules = _matching_candidates(preferences.get("auto_allow_rules", []), command_key, normalized_cwd)
+    promoted_rules = [rule for rule in auto_allow_rules if _candidate_key(rule) not in previous_rule_keys]
+
+    return {
+        "candidates": candidates,
+        "auto_allow_rules": auto_allow_rules,
+        "promoted_rules": promoted_rules,
+        "preferences": preferences,
+        "last_seen_at": ts,
+    }
+
+
+def add_never_allow_rule(command: str, cwd: str | None = None, reason: str = "manually revoked auto allow rule") -> dict[str, Any]:
+    preferences = read_preferences()
+    rules = list(preferences.get("never_allow", []))
+    normalized_rule = normalize_never_allow_rule({
+        "command": command,
+        "cwd": cwd or "",
+        "reason": reason,
+        "created_at": utc_now_iso(),
+    })
+    if not normalized_rule:
+        return {"added": False, "rule": None}
+
+    rule_key = _candidate_key(normalized_rule)
+    for existing in rules:
+        if _candidate_key(existing) == rule_key:
+            return {"added": False, "rule": existing}
+
+    rules.append(normalized_rule)
+    preferences["never_allow"] = rules
+    write_preferences(preferences)
+    return {"added": True, "rule": normalized_rule}
+
+
+def remove_auto_allow_rules(command: str, cwd: str | None = None, all_matching: bool = False) -> dict[str, Any]:
+    preferences = read_preferences()
+    current_rules = preferences.get("auto_allow_rules", [])
+    removed_rules = [rule for rule in current_rules if _rule_matches(command, cwd, rule, all_matching=all_matching)]
+    kept_rules = [rule for rule in current_rules if not _rule_matches(command, cwd, rule, all_matching=all_matching)]
+    preferences["auto_allow_rules"] = kept_rules
+    write_preferences(preferences)
+    return {
+        "removed": len(removed_rules),
+        "removed_rules": removed_rules,
+    }
 
 
 def rebuild_stats_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -424,17 +660,26 @@ def find_allow_candidates(command: str, cwd: str | None = None) -> list[dict[str
     if not command_key:
         return []
 
-    candidates: list[dict[str, Any]] = []
-    for candidate in read_preferences().get("always_allow_candidates", []):
-        if candidate.get("command") != command_key:
-            continue
-        if candidate.get("scope") == "project" and candidate.get("cwd") == normalized_cwd:
-            candidates.append(candidate)
-        elif candidate.get("scope") == "global":
-            candidates.append(candidate)
-
+    candidates = _matching_candidates(read_preferences().get("always_allow_candidates", []), command_key, normalized_cwd)
     candidates.sort(key=lambda item: (item.get("scope") != "project", -int(item.get("success_count", 0) or 0)))
     return candidates
+
+
+def find_auto_allow_rules(command: str, cwd: str | None = None) -> list[dict[str, Any]]:
+    command_key = command_prefix(command) or normalize_command(command)
+    normalized_cwd = normalize_scope_path(cwd)
+    if not command_key:
+        return []
+
+    rules = _matching_candidates(read_preferences().get("auto_allow_rules", []), command_key, normalized_cwd)
+    rules = [rule for rule in rules if rule.get("enabled", True)]
+    rules.sort(key=lambda item: (item.get("scope") != "project", -int(item.get("approved_count", 0) or 0)))
+    return rules
+
+
+def find_auto_allow_match(command: str, cwd: str | None = None) -> dict[str, Any] | None:
+    rules = find_auto_allow_rules(command, cwd)
+    return rules[0] if rules else None
 
 
 def build_memory_summary() -> dict[str, Any]:
@@ -462,6 +707,8 @@ def build_memory_summary() -> dict[str, Any]:
             "events": len(events),
             "lessons": len(lessons),
             "allow_candidates": len(preferences.get("always_allow_candidates", [])),
+            "auto_allow_rules": len(preferences.get("auto_allow_rules", [])),
+            "never_allow_rules": len(preferences.get("never_allow", [])),
             "commands_tracked": len(stats.get("commands", {})),
             "error_signatures_tracked": len(stats.get("error_signatures", {})),
         },
@@ -504,6 +751,12 @@ def build_memory_summary() -> dict[str, Any]:
                 for candidate in preferences.get("always_allow_candidates", [])
                 if candidate.get("scope") == "global"
             ][:5],
+            "auto_allow_project_rules": [
+                rule
+                for rule in preferences.get("auto_allow_rules", [])
+                if rule.get("scope") == "project"
+            ][:5],
+            "never_allow_rules": preferences.get("never_allow", [])[:5],
         },
     }
 
@@ -535,11 +788,14 @@ def migrate_memory_store(dry_run: bool = False, backup: bool = False) -> dict[st
     events = [normalize_event_record(event) for event in original_events]
     stats = rebuild_stats_from_events(events)
     preferences = rebuild_preferences_from_events(events, original_preferences)
+    preferences["never_allow"] = original_preferences.get("never_allow", [])
 
     summary = {
         "events": len(events),
         "lessons": 0,
         "candidates": len(preferences.get("always_allow_candidates", [])),
+        "auto_allow_rules": len(preferences.get("auto_allow_rules", [])),
+        "never_allow_rules": len(preferences.get("never_allow", [])),
         "dry_run": dry_run,
         "backup_created": False,
         "backup_files": {},

@@ -17,12 +17,13 @@ from scripts.lesson_engine import rebuild_lessons_from_events
 from scripts.memory_store import (
     append_event,
     ensure_memory_home,
-    update_allow_candidate,
+    update_allow_candidates_and_auto_rules,
     update_command_stats,
     update_error_signature_stats,
     utc_now_iso,
 )
 from scripts.sanitize import command_prefix, extract_error_signature, normalize_command, normalize_tool_result_text
+from scripts.settings_sync import sync_project_auto_allow_rules
 
 
 def silent_response() -> dict:
@@ -83,9 +84,14 @@ def main() -> int:
     append_event(event)
     prefix = event["command_prefix"] or command
     update_command_stats(prefix, ok, ts)
-    candidate_matches = []
-    if ok:
-        candidate_matches = update_allow_candidate(prefix, event.get("cwd", ""), ts)
+    if prefix:
+        update_result = update_allow_candidates_and_auto_rules(prefix, event.get("cwd", ""), ts)
+        promoted_rules = update_result.get("promoted_rules", [])
+        if promoted_rules:
+            try:
+                sync_project_auto_allow_rules(PLUGIN_ROOT, promoted_rules)
+            except Exception:
+                pass
     if error_signature:
         update_error_signature_stats(error_signature, ts)
         rebuild_lessons_from_events()
